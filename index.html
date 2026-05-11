@@ -82,6 +82,8 @@ body{
 }
 .api-row input:focus{border-color:var(--pri);box-shadow:0 0 0 2px var(--pri-light)}
 .api-row input::placeholder{color:var(--text-light);font-size:11px}
+.api-row input::-ms-reveal,
+.api-row input::-ms-clear{display:none}  /* 隐藏 Edge/IE 原生密码切换按钮 */
 .api-row .eye{
   background:none;border:none;cursor:pointer;font-size:14px;padding:4px;
   color:var(--text-light);border-radius:4px;transition:all .2s ease
@@ -93,6 +95,18 @@ body{
 }
 .api-st .dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
 .api-st .dot.off{background:#ccc}.api-st .dot.on{background:#22c55e}
+
+/* model params */
+.param-row{margin-bottom:10px;padding:0 6px}
+.param-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px}
+.param-head label{font-size:11px;color:var(--text-sec)}
+.param-head .pv{font-size:11px;font-weight:600;color:var(--pri)}
+.param-row input[type=range]{width:100%;accent-color:var(--pri);height:6px;cursor:pointer;margin:0}
+.param-row input[type=number]{
+  width:100%;border:1px solid var(--border);border-radius:6px;
+  padding:6px 8px;font-size:12px;text-align:center;outline:none;box-sizing:border-box
+}
+.param-row input[type=number]:focus{border-color:var(--pri)}
 
 /* ---- ref file ---- */
 .ref-area{padding:0 4px}
@@ -234,6 +248,13 @@ body{
   transition:all .2s ease
 }
 .msg-acts button:hover{color:var(--text);background:rgba(0,0,0,0.05)}
+
+/* tool call message */
+.tool-msg{
+  max-width:720px;margin:0 auto 8px;padding:0 24px;
+  font-size:12px;color:var(--text-sec);
+  display:flex;align-items:center;gap:6px;opacity:.75
+}
 
 /* code wrap */
 .cw{position:relative;margin:8px 0}
@@ -378,6 +399,24 @@ body{
       </div>
     </div>
 
+    <!-- 模型参数 -->
+    <div class="sb-section">
+      <div class="sb-label">模型参数</div>
+      <div class="param-row">
+        <div class="param-head">
+          <label>Temperature</label>
+          <span class="pv" id="tempVal">0.7</span>
+        </div>
+        <input type="range" id="tempSlider" min="0" max="2" step="0.1" value="0.7">
+      </div>
+      <div class="param-row">
+        <div class="param-head">
+          <label>Max Tokens</label>
+        </div>
+        <input type="number" id="maxTokInp" min="100" max="4096" step="100" value="2048">
+      </div>
+    </div>
+
     <!-- 参考文件 -->
     <div class="sb-section">
       <div class="sb-label">参考文件</div>
@@ -415,7 +454,8 @@ body{
       <div class="welcome" id="welcomeBlock">
         <div class="w-icon">✦</div>
         <h3>你好，我是 AI 智能助手</h3>
-        <p>基于阿里云百炼 Qwen3.6-Plus 模型。在左侧输入 API Key 即可开始对话。我可以帮你：</p>
+        <p>基于阿里云百炼 Qwen3.6-Plus 模型。在左侧输入 API Key 即可开始对话。我可以：</p>
+        <p style="font-size:13px;color:var(--text-light);margin-bottom:12px">查询实时天气 · 联网搜索最新资讯 · AI 图片生成 · 文档分析 · 代码解读 · 简历优化 · 笔记整理</p>
         <div class="w-caps">
           <button class="w-cap" onclick="App.setSystem('doc','请帮我提取并总结这份文档的核心内容：')">📄 文档提取与摘要</button>
           <button class="w-cap" onclick="App.setSystem('code','请分析以下代码的逻辑和潜在问题：')">💻 代码解读与优化</button>
@@ -428,6 +468,7 @@ body{
   </div>
 
   <div class="input-area">
+    <div id="toolStatus" style="text-align:center;font-size:12px;color:var(--pri);min-height:20px;padding:0 0 4px;display:none"></div>
     <div class="input-box">
       <div class="input-pv" id="filePv"></div>
       <div class="input-row">
@@ -442,7 +483,9 @@ body{
       </div>
     </div>
     <div class="input-hint">
-      <span id="charHint">0 字</span><span>Enter 发送 · Shift+Enter 换行</span>
+      <span id="charHint">0 字</span>
+      <span id="tokenStats" style="color:var(--pri)">累计 0 token</span>
+      <span>Enter 发送 · Shift+Enter 换行</span>
     </div>
   </div>
 </main>
@@ -465,8 +508,13 @@ const App = {
   convId: null,
   files: [],       // [{name, content, size}] — 最多3个
   filesIntroduced: false,  // 文件是否已注入过RAG上下文
+  temperature: 0.7,
+  maxTokens: 2048,
   busy: false,
   ctrl: null,
+
+  setTemp(v) { this.temperature = parseFloat(v); document.getElementById('tempVal').textContent = v; },
+  setMaxTok(v) { this.maxTokens = Math.max(100, Math.min(4096, parseInt(v)||2048)); document.getElementById('maxTokInp').value = this.maxTokens; },
 
   setKey(k) {
     this.key = k.trim();
@@ -504,7 +552,8 @@ const App = {
   },
 
   fixSys() {
-    const SYS = this.sysPresets[this._sysKey] || this.sysPresets.default;
+    const SYS = (this.sysPresets[this._sysKey] || this.sysPresets.default) +
+      `\n\n当前时间：${new Date().toLocaleString('zh-CN', {timeZone:'Asia/Shanghai', year:'numeric', month:'2-digit', day:'2-digit', weekday:'long', hour:'2-digit', minute:'2-digit', second:'2-digit'})} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
     const wo = this.msgs.filter(m => m.role !== 'system');
     this.msgs = [{ role:'system', content:SYS, ts:Date.now() }, ...wo];
   }
@@ -541,7 +590,7 @@ const ConvMgr = {
     if (App.convId && App.msgs.filter(m => m.role !== 'system').length) this.persist();
     App.convId = this.gid();
     App.msgs = []; App.files = []; App.filesIntroduced = false; App._sysKey = 'default';
-    App.fixSys();
+    App.fixSys(); TokenStats.reset();
     UI.resetAll(); this.render(); UI.closeSb();
     document.getElementById('topTitle').textContent = '新对话';
   },
@@ -552,7 +601,7 @@ const ConvMgr = {
     const c = this.list().find(x => x.id === id);
     if (!c) return;
     App.convId = c.id; App.msgs = c.msgs || []; App._sysKey = 'default';
-    App.fixSys(); App.files = [];
+    App.fixSys(); App.files = []; TokenStats.reset();
     UI.resetAll(); UI.renderMsgs();
     if (App.msgs.filter(m => m.role !== 'system').length) UI.hideWl();
     document.getElementById('topTitle').textContent = c.name || '历史对话';
@@ -628,6 +677,39 @@ const SW = {
       if (tks + ct <= this.MAX) { kept.unshift(rest[i]); tks += ct; } else break;
     }
     return [...out, ...kept];
+  }
+};
+
+// ==================== Token 用量统计 ====================
+const TokenStats = {
+  prompts: 0,       // 累计发送 token 数
+  completions: 0,   // 累计接收 token 数
+  lastPrompt: 0,
+  lastCompletion: 0,
+
+  // 记录一次请求的 token 数（传入发送的 messages 和收到的回复文本）
+  record(messages, responseText) {
+    let p = 0;
+    for (const m of messages) p += SW.est(m.content || '');
+    const c = SW.est(responseText || '');
+    this.lastPrompt = p;
+    this.lastCompletion = c;
+    this.prompts += p;
+    this.completions += c;
+    this.show();
+  },
+
+  show() {
+    const el = document.getElementById('tokenStats');
+    if (!el) return;
+    const total = this.prompts + this.completions;
+    el.textContent = `本轮 ${this.lastPrompt}+${this.lastCompletion} · 累计 ${total} token`;
+  },
+
+  reset() {
+    this.prompts = 0; this.completions = 0;
+    this.lastPrompt = 0; this.lastCompletion = 0;
+    this.show();
   }
 };
 
@@ -782,41 +864,109 @@ const FileH = {
   }
 };
 
+// ==================== Tools（浏览器端可调用函数） ====================
+const Tools = {
+  defs: [
+    { type:'function', function:{ name:'get_current_datetime', description:'获取当前日期和时间（含时区）。当用户问"现在几点""今天几号""当前时间"时调用。',
+      parameters:{ type:'object', properties:{}, required:[] } } },
+    { type:'function', function:{ name:'evaluate_math', description:'安全计算数学表达式。支持加减乘除、括号、百分比。',
+      parameters:{ type:'object', properties:{ expression:{ type:'string', description:'数学表达式，如"(2+3)*4"' } }, required:['expression'] } } },
+    { type:'function', function:{ name:'get_weather', description:'查询指定城市当前天气。当用户问某地"天气""几度""下雨吗"时调用。',
+      parameters:{ type:'object', properties:{ city:{ type:'string', description:'城市名称，如"北京""Shanghai"' } }, required:['city'] } } },
+    { type:'function', function:{ name:'search_web', description:'搜索互联网获取最新信息、新闻、实时数据。当用户问需要最新信息的问题（如"今天热搜""最新新闻""XX最新版本"）或模型知识不足时调用。',
+      parameters:{ type:'object', properties:{ query:{ type:'string', description:'搜索关键词，简洁明确' } }, required:['query'] } } },
+    { type:'function', function:{ name:'generate_image', description:'根据文字描述生成图片。当用户说"画一张""生成图片""illustrate"等时调用。生成的图片URL可嵌入回复显示。',
+      parameters:{ type:'object', properties:{ prompt:{ type:'string', description:'英文图片描述，详细描述画面、风格、色调' } }, required:['prompt'] } } }
+  ],
+
+  _weatherCodes: { 0:'晴天☀️',1:'大部晴朗🌤️',2:'多云⛅',3:'阴天☁️',45:'雾🌫️',48:'霜雾🌫️',51:'小毛毛雨🌧️',53:'毛毛雨🌧️',55:'大毛毛雨🌧️',61:'小雨🌧️',63:'中雨🌧️',65:'大雨🌧️',71:'小雪❄️',73:'中雪❄️',75:'大雪❄️',77:'雪粒❄️',80:'阵雨🌦️',81:'中阵雨🌦️',82:'大阵雨🌦️',85:'小阵雪❄️',86:'大阵雪❄️',95:'雷暴⛈️',96:'雷暴+冰雹⛈️',99:'强雷暴+冰雹⛈️' },
+
+  // SearXNG 公共实例（自动故障转移）
+  _searchURLs: ['https://search.bus-hit.me','https://searx.be','https://search.saptiva.com','https://opnxng.com'],
+
+  async execute(name, args) {
+    switch (name) {
+      case 'get_current_datetime': {
+        const n = new Date();
+        return n.toLocaleString('zh-CN', {timeZone:'Asia/Shanghai', year:'numeric', month:'2-digit', day:'2-digit', weekday:'long', hour:'2-digit', minute:'2-digit', second:'2-digit'})
+          + ' (' + (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC') + ')';
+      }
+      case 'evaluate_math': {
+        const s = (args.expression||'').replace(/[^0-9+\-*/().%\s]/g, '');
+        if (!s || s.length > 200) return '表达式无效或过长';
+        try { const r = Function('"use strict"; return (' + s + ')')(); return `${args.expression} = ${r}`; }
+        catch(e) { return `计算错误：${e.message}`; }
+      }
+      case 'get_weather': {
+        const city = (args.city || '').trim();
+        if (!city) return '请提供城市名称';
+        try {
+          const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=zh`;
+          const geoR = await fetch(geoUrl, { signal: AbortSignal.timeout(8000) });
+          if (!geoR.ok) return `地理编码失败 (${geoR.status})`;
+          const geo = await geoR.json();
+          if (!geo.results?.length) return `未找到城市"${city}"，请检查名称`;
+          const { name, country, latitude:lat, longitude:lon } = geo.results[0];
+          const wxUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m&timezone=auto`;
+          const wxR = await fetch(wxUrl, { signal: AbortSignal.timeout(8000) });
+          if (!wxR.ok) return `天气查询失败 (${wxR.status})`;
+          const wx = await wxR.json();
+          const c = wx.current;
+          const desc = this._weatherCodes[c.weather_code] || `代码${c.weather_code}`;
+          return `${name}(${country||''}) 当前天气：${desc}，气温 ${c.temperature_2m}°C，体感 ${c.apparent_temperature}°C，湿度 ${c.relative_humidity}%，风速 ${c.wind_speed_10m}km/h ${c.wind_direction_10m}°`;
+        } catch (e) { return `天气查询失败：${e.message}`; }
+      }
+      case 'search_web': {
+        const q = (args.query || '').trim();
+        if (!q) return '请提供搜索关键词';
+        // 依次尝试多个 SearXNG 实例
+        for (const base of this._searchURLs) {
+          try {
+            const r = await fetch(`${base}/search?q=${encodeURIComponent(q)}&format=json&categories=general&language=zh`, { signal: AbortSignal.timeout(10000) });
+            if (!r.ok) continue;
+            const data = await r.json();
+            if (!data.results?.length) continue;
+            const top = data.results.slice(0, 5);
+            return top.map((r,i) => `${i+1}. **${r.title||'无标题'}**\n   ${(r.content||r.snippet||'').replace(/\n/g,' ').slice(0,200)}\n   ${r.url}`).join('\n\n');
+          } catch (_) { continue; }
+        }
+        return '搜索服务暂时不可用，请稍后重试';
+      }
+      case 'generate_image': {
+        const prompt = (args.prompt || '').trim();
+        if (!prompt) return '请提供图片描述';
+        const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&seed=${Math.floor(Math.random()*100000)}`;
+        return `图片已生成，链接：${url}\n\n![生成图片](${url})`;
+      }
+      default: return '未知工具：' + name;
+    }
+  }
+};
+
 // ==================== API ====================
 const API = {
   URL: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
   MODEL: 'qwen3.6-plus',
 
-  async send(txt) {
-    if (!App.key) { UI.toast('请先在左侧输入 API Key','err'); document.getElementById('apiInp').focus(); return; }
-    App.fixSys();
+  // 解析建议追问
+  _parseSuggests(content) {
+    const sm = content.match(/<<<SUGGEST>>>\s*([\s\S]*?)\s*<<<ENDSUGGEST>>>/);
+    if (!sm) return null;
+    const cleaned = content.replace(/<<<SUGGEST>>>[\s\S]*?<<<ENDSUGGEST>>>/g, '').trim();
+    const suggests = sm[1].split('\n')
+      .map(s => s.replace(/^\d+[\.\、\)]\s*/, '').trim())
+      .filter(s => s.length > 0 && s.length <= 60);
+    return { cleaned, suggests };
+  },
 
-    // RAG 上下文注入到 system 消息（不会被滑动窗口截断，根除丢上下文问题）
-    const ragCtx = FileH.buildCtx(txt, App.filesIntroduced);
-    if (ragCtx && !App.filesIntroduced) App.filesIntroduced = true;
-
-    App.msgs.push({ role:'user', content:txt, ts:Date.now() });
-    UI.renderMsgs(); UI.hideWl(); UI.clearInp(); UI.setBusy(true);
-
-    // 构建 API messages：RAG 上下文注入 system 消息，永不被截断
-    const msgsForAPI = App.msgs.map(m => ({role:m.role, content:m.content}));
-    if (ragCtx) {
-      const sysMsg = msgsForAPI.find(m => m.role === 'system');
-      if (sysMsg) sysMsg.content += '\n\n' + ragCtx;
-    }
-    const body = SW.apply(msgsForAPI);
-    App.ctrl = new AbortController();
-
-    // 显示加载动画
-    const loadRow = UI.showLoad();
-    let am = null;     // assistant 消息，等首个 chunk 再创建
-    let started = false;
-
-    try {
+  // 带工具调用的非流式对话循环（最多5轮）
+  async _chatWithTools(messages) {
+    let msgs = [...messages];
+    for (let round = 0; round < 5; round++) {
       const r = await fetch(this.URL, {
         method:'POST',
         headers: {'Content-Type':'application/json', 'Authorization':`Bearer ${App.key}`},
-        body: JSON.stringify({ model:this.MODEL, messages:body, stream:true, temperature:.7, max_tokens:2048 }),
+        body: JSON.stringify({ model:this.MODEL, messages:msgs, tools:Tools.defs, stream:false, temperature:App.temperature, max_tokens:App.maxTokens }),
         signal: App.ctrl.signal
       });
 
@@ -829,78 +979,99 @@ const API = {
         throw new Error(e);
       }
 
-      const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = '';
-      while (true) {
-        const { done, value } = await reader.read(); if (done) break;
-        buf += dec.decode(value, {stream:true});
-        const lines = buf.split('\n'); buf = lines.pop()||'';
-        for (const ln of lines) {
-          const s = ln.trim(); if (!s.startsWith('data:')) continue;
-          const d = s.slice(5).trim(); if (d === '[DONE]') break;
-          try {
-            const delta = JSON.parse(d)?.choices?.[0]?.delta;
-            if (delta?.content) {
-              if (!started) {
-                // 首个 chunk：隐藏加载，创建气泡
-                started = true;
-                UI.hideLoad(loadRow);
-                am = { role:'assistant', content:'', ts:Date.now() };
-                App.msgs.push(am);
-                UI.renderMsgs(); UI.hideWl(); UI.scroll();
-              }
-              am.content += delta.content;
-              UI.updateStream(am.content);
-            }
-          } catch (_) {}
+      const data = await r.json();
+      const msg = data.choices?.[0]?.message;
+      if (!msg) throw new Error('模型未返回内容');
+
+      // 模型发起工具调用
+      if (msg.tool_calls) {
+        msgs.push({ role:'assistant', tool_calls: msg.tool_calls, content: null });
+        for (const tc of msg.tool_calls) {
+          const label = tc.function.name === 'get_current_datetime' ? '获取当前时间' :
+                        tc.function.name === 'evaluate_math' ? '计算' :
+                        tc.function.name === 'get_weather' ? '查询天气' :
+                        tc.function.name === 'search_web' ? '搜索网页' :
+                        tc.function.name === 'generate_image' ? '生成图片' : tc.function.name;
+          UI.setToolStatus(`正在进行${label}...`);
+          let args = {};
+          try { args = JSON.parse(tc.function.arguments || '{}'); } catch(_) {}
+          const result = await Tools.execute(tc.function.name, args);
+          UI.setToolStatus('');
+          msgs.push({ role:'tool', tool_call_id: tc.id, content: result });
+          // UI 中显示工具调用
+          App.msgs.push({ role:'tool', content:'🔧 ' + label + ' → ' + result, ts:Date.now() });
         }
+        continue; // 继续循环，把工具结果发给模型
       }
 
-      // 流结束：处理空响应（可能是 200 但返回了 JSON 错误）
-      if (!started) {
-        UI.hideLoad(loadRow);
-        let emptyMsg = '（模型未返回内容，请重试）';
-        // 检测缓冲中是否有 JSON 错误（某些网关返回 200 + JSON error body）
-        if (buf.trim().startsWith('{')) {
-          try {
-            const j = JSON.parse(buf.trim());
-            if (j.error?.message) emptyMsg = '错误：' + j.error.message;
-            else if (j.message) emptyMsg = '错误：' + j.message;
-          } catch (_) {}
-        }
-        am = { role:'assistant', content: emptyMsg, ts:Date.now() };
-        App.msgs.push(am);
-      } else if (!am.content) {
-        am.content = '（模型未返回内容）';
-      }
+      // 模型返回了最终文本
+      if (msg.content) return msg.content;
+      throw new Error('模型未返回内容');
+    }
+    throw new Error('工具调用轮次过多，已中止');
+  },
 
+  async send(txt) {
+    if (!App.key) { UI.toast('请先在左侧输入 API Key','err'); document.getElementById('apiInp').focus(); return; }
+    App.fixSys();
+
+    // RAG 上下文注入到 system 消息
+    const ragCtx = FileH.buildCtx(txt, App.filesIntroduced);
+    if (ragCtx && !App.filesIntroduced) App.filesIntroduced = true;
+
+    App.msgs.push({ role:'user', content:txt, ts:Date.now() });
+    UI.renderMsgs(); UI.hideWl(); UI.clearInp(); UI.setBusy(true);
+
+    // 构建 API messages
+    const msgsForAPI = App.msgs.map(m => {
+      if (m.role === 'tool') return null; // tool消息不传给API
+      return { role: m.role, content: m.content };
+    }).filter(Boolean);
+    if (ragCtx) {
+      const sysMsg = msgsForAPI.find(m => m.role === 'system');
+      if (sysMsg) sysMsg.content += '\n\n' + ragCtx;
+    }
+
+    App.ctrl = new AbortController();
+    const loadRow = UI.showLoad();
+    let am = null;
+    let responseContent = null;
+
+    try {
+      // 带工具调用的非流式对话
+      responseContent = await this._chatWithTools(SW.apply(msgsForAPI));
+      UI.hideLoad(loadRow);
     } catch (err) {
       UI.hideLoad(loadRow);
       if (err.name === 'AbortError') {
-        if (am && !am.content) am.content = '（已停止生成）';
+        responseContent = '（已停止生成）';
       } else {
         const msg = err.message || '网络异常';
         UI.toast(msg, 'err');
-        // 认证错误：闪烁 API Key 输入框提醒用户修改
         if (msg.includes('Key') || msg.includes('key') || msg.includes('认证') || msg.includes('401') || msg.includes('403')) {
           UI.flashKeyInput();
         }
-        if (am) App.msgs.pop();
+        // 回滚用户消息（API没调成功）
+        App.msgs.pop();
+        App.ctrl = null; UI.setBusy(false); UI.renderMsgs(); UI.scroll();
+        return;
       }
     }
 
-    // 强制最终渲染（解决流式节流可能遗漏最后一帧的问题）
-    UI.flushStream();
-
-    // 解析 AI 生成的建议追问
-    if (am && am.content) {
-      const sm = am.content.match(/<<<SUGGEST>>>\s*([\s\S]*?)\s*<<<ENDSUGGEST>>>/);
-      if (sm) {
-        am.content = am.content.replace(/<<<SUGGEST>>>[\s\S]*?<<<ENDSUGGEST>>>/g, '').trim();
-        am.suggests = sm[1].split('\n')
-          .map(s => s.replace(/^\d+[\.\、\)]\s*/, '').trim())
-          .filter(s => s.length > 0 && s.length <= 60);
-      }
+    // 解析建议追问并创建助手消息
+    if (responseContent) {
+      const parsed = this._parseSuggests(responseContent);
+      const content = parsed ? parsed.cleaned : responseContent;
+      am = { role:'assistant', content, ts:Date.now() };
+      if (parsed) am.suggests = parsed.suggests;
+      App.msgs.push(am);
+    } else {
+      am = { role:'assistant', content:'（模型未返回内容，请重试）', ts:Date.now() };
+      App.msgs.push(am);
     }
+
+    // 记录 token 用量
+    TokenStats.record(msgsForAPI, responseContent || '');
 
     App.ctrl = null; UI.setBusy(false); UI.renderMsgs(); UI.scroll();
     ConvMgr.persist(); UI.upTitle();
@@ -935,7 +1106,7 @@ const Actions = {
     if (!App.msgs.filter(m => m.role !== 'system').length) { UI.toast('对话为空','warn'); return; }
     UI.modal('清空对话','<p>将清除当前对话全部消息，不可撤销。</p>', () => {
       App.msgs = []; App.files = []; App.filesIntroduced = false; App._sysKey = 'default';
-      App.fixSys(); UI.resetAll(); ConvMgr.persist();
+      App.fixSys(); TokenStats.reset(); UI.resetAll(); ConvMgr.persist();
       document.getElementById('topTitle').textContent = '新对话'; UI.toast('已清空','ok');
     }, '确认清空');
   },
@@ -999,6 +1170,13 @@ const UI = {
     document.getElementById('sendBtn').classList.toggle('off', v);
     document.getElementById('stopBtn').classList.toggle('on', v);
     document.getElementById('userInp').disabled = v;
+    if (!v) this.setToolStatus('');
+  },
+
+  setToolStatus(msg) {
+    const el = document.getElementById('toolStatus');
+    el.textContent = msg;
+    el.style.display = msg ? 'block' : 'none';
   },
 
   showLoad() {
@@ -1011,8 +1189,16 @@ const UI = {
   // ---- render messages ----
   renderMsgs() {
     const ci = document.getElementById('chatInner');
-    ci.querySelectorAll('.msg,.load').forEach(e => e.remove());
+    ci.querySelectorAll('.msg,.load,.tool-msg').forEach(e => e.remove());
     App.msgs.filter(m => m.role !== 'system').forEach(m => {
+      // 工具调用消息：轻量内联样式
+      if (m.role === 'tool') {
+        const tr = document.createElement('div'); tr.className = 'tool-msg';
+        tr.textContent = m.content;
+        ci.appendChild(tr);
+        return;
+      }
+
       const row = document.createElement('div'); row.className = 'msg ' + (m.role === 'user' ? 'user' : 'ai');
 
       // Avatar
@@ -1191,6 +1377,12 @@ const UI = {
       }
     });
   }
+
+  // 模型参数控件事件绑定
+  const ts = document.getElementById('tempSlider');
+  if (ts) ts.addEventListener('input', function(){ App.setTemp(this.value); });
+  const mt = document.getElementById('maxTokInp');
+  if (mt) mt.addEventListener('change', function(){ App.setMaxTok(this.value); });
 })();
 </script>
 </body>
